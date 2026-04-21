@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace = "com.maddog.stencilforge"
+    namespace = "com.piratedog.stencilforge"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.maddog.stencilforge"
+        applicationId = "com.piratedog.stencilforge"
         minSdk = 24
         targetSdk = 36
         versionCode = 1
