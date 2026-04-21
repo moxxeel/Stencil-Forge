@@ -11,11 +11,14 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -25,6 +28,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -32,12 +37,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ElevatedFilterChip
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -45,6 +53,9 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -54,6 +65,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -64,12 +76,17 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.maddog.stencilforge.processor.StencilParams
+import com.maddog.stencilforge.processor.StencilPreset
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -84,6 +101,7 @@ fun EditorScreen(
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
 
     val original by viewModel.originalBitmap.collectAsState()
     val stencil by viewModel.stencilBitmap.collectAsState()
@@ -91,36 +109,40 @@ fun EditorScreen(
     val isProcessing by viewModel.isProcessing.collectAsState()
     val saveResult by viewModel.saveResult.collectAsState()
     val loadedStencil by viewModel.loadedStencil.collectAsState()
+    val errorMessage by viewModel.errorMessage.collectAsState()
+    val canUndo by viewModel.canUndo.collectAsState()
+    val canRedo by viewModel.canRedo.collectAsState()
 
-    // true = estamos editando un stencil existente, false = nuevo
     val isEditMode = stencilId != null
 
     var stencilName by remember { mutableStateOf("") }
-    var showOriginal by remember { mutableStateOf(false) }
+    // 0f = full stencil, 1f = full original (before/after)
+    var compareSlider by remember { mutableFloatStateOf(0f) }
+    var showCompare by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
 
-    // Carga el stencil existente al entrar
+    // Zoom state
+    var scale by remember { mutableFloatStateOf(1f) }
+    var offsetX by remember { mutableFloatStateOf(0f) }
+    var offsetY by remember { mutableFloatStateOf(0f) }
+
     LaunchedEffect(stencilId) {
-        if (stencilId != null) {
-            viewModel.loadExistingStencil(stencilId)
-        }
+        if (stencilId != null) viewModel.loadExistingStencil(stencilId)
     }
 
-    // Pre-pobla el nombre cuando se carga la entidad
     LaunchedEffect(loadedStencil) {
         loadedStencil?.let { if (stencilName.isBlank()) stencilName = it.name }
     }
 
-    // Manejo de resultados de guardado / eliminación
     LaunchedEffect(saveResult) {
         saveResult?.let { result ->
             when (result) {
                 is EditorViewModel.SaveResult.Success -> {
-                    Toast.makeText(ctx, "Stencil guardado", Toast.LENGTH_SHORT).show()
+                    snackbarHostState.showSnackbar("Stencil guardado")
                     viewModel.clearSaveResult()
                 }
                 is EditorViewModel.SaveResult.Error -> {
-                    Toast.makeText(ctx, "Error: ${result.message}", Toast.LENGTH_LONG).show()
+                    snackbarHostState.showSnackbar("Error: ${result.message}")
                     viewModel.clearSaveResult()
                 }
                 is EditorViewModel.SaveResult.Deleted -> {
@@ -131,11 +153,23 @@ fun EditorScreen(
         }
     }
 
+    LaunchedEffect(errorMessage) {
+        errorMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearError()
+        }
+    }
+
     val imagePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent()
-    ) { uri: Uri? -> uri?.let { viewModel.loadImage(it) } }
+    ) { uri: Uri? ->
+        uri?.let {
+            // Reset zoom when new image loaded
+            scale = 1f; offsetX = 0f; offsetY = 0f
+            viewModel.loadImage(it)
+        }
+    }
 
-    // Diálogo de confirmación de eliminación
     if (showDeleteDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
@@ -154,6 +188,11 @@ fun EditorScreen(
     }
 
     Scaffold(
+        snackbarHost = {
+            SnackbarHost(snackbarHostState) { data ->
+                Snackbar(snackbarData = data)
+            }
+        },
         topBar = {
             TopAppBar(
                 title = {
@@ -164,24 +203,55 @@ fun EditorScreen(
                     )
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Volver")
+                    IconButton(
+                        onClick = onBack,
+                        modifier = Modifier.semantics { contentDescription = "Volver atrás" }
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
                     }
                 },
                 actions = {
+                    IconButton(
+                        onClick = { viewModel.undo() },
+                        enabled = canUndo,
+                        modifier = Modifier.semantics { contentDescription = "Deshacer" }
+                    ) {
+                        Icon(
+                            Icons.Default.Refresh,
+                            contentDescription = null,
+                            tint = if (canUndo) MaterialTheme.colorScheme.onSurface
+                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
+                            modifier = Modifier.graphicsLayer(scaleX = -1f)
+                        )
+                    }
+                    IconButton(
+                        onClick = { viewModel.redo() },
+                        enabled = canRedo,
+                        modifier = Modifier.semantics { contentDescription = "Rehacer" }
+                    ) {
+                        Icon(
+                            Icons.Default.Refresh,
+                            contentDescription = null,
+                            tint = if (canRedo) MaterialTheme.colorScheme.onSurface
+                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+                        )
+                    }
                     if (stencil != null) {
-                        IconButton(onClick = {
-                            scope.launch { exportToGallery(ctx, stencil!!) }
-                        }) {
-                            Icon(Icons.Default.Share, "Exportar PNG")
+                        IconButton(
+                            onClick = { viewModel.shareStencil() },
+                            modifier = Modifier.semantics { contentDescription = "Compartir stencil" }
+                        ) {
+                            Icon(Icons.Default.Share, contentDescription = null)
                         }
                     }
-                    // Botón eliminar solo en modo edición
                     if (isEditMode && loadedStencil != null) {
-                        IconButton(onClick = { showDeleteDialog = true }) {
+                        IconButton(
+                            onClick = { showDeleteDialog = true },
+                            modifier = Modifier.semantics { contentDescription = "Eliminar stencil" }
+                        ) {
                             Icon(
                                 Icons.Default.Delete,
-                                contentDescription = "Eliminar stencil",
+                                contentDescription = null,
                                 tint = MaterialTheme.colorScheme.error
                             )
                         }
@@ -199,22 +269,55 @@ fun EditorScreen(
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
         ) {
-            // --- Preview ---
+            // --- Preview con zoom y before/after ---
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(1f)
-                    .background(Color(0xFF1A1A1A)),
+                    .background(Color(0xFF1A1A1A))
+                    .clip(RoundedCornerShape(0.dp))
+                    .pointerInput(Unit) {
+                        detectTransformGestures { _, pan, zoom, _ ->
+                            scale = (scale * zoom).coerceIn(1f, 5f)
+                            if (scale > 1f) {
+                                offsetX += pan.x
+                                offsetY += pan.y
+                            } else {
+                                offsetX = 0f
+                                offsetY = 0f
+                            }
+                        }
+                    },
                 contentAlignment = Alignment.Center
             ) {
-                val displayBitmap = if (showOriginal) original else stencil
-                if (displayBitmap != null) {
-                    Image(
-                        bitmap = displayBitmap.asImageBitmap(),
-                        contentDescription = "Preview",
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize()
-                    )
+                if (original != null && stencil != null) {
+                    if (showCompare) {
+                        // Before/After split view
+                        BeforeAfterView(
+                            original = original!!,
+                            stencil = stencil!!,
+                            splitRatio = compareSlider,
+                            scale = scale,
+                            offsetX = offsetX,
+                            offsetY = offsetY
+                        )
+                    } else {
+                        Image(
+                            bitmap = stencil!!.asImageBitmap(),
+                            contentDescription = "Vista previa del stencil procesado",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .graphicsLayer(
+                                    scaleX = scale,
+                                    scaleY = scale,
+                                    translationX = offsetX,
+                                    translationY = offsetY
+                                )
+                        )
+                    }
+
+                    // Badge top-left
                     Box(
                         modifier = Modifier
                             .align(Alignment.TopStart)
@@ -224,22 +327,41 @@ fun EditorScreen(
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Text(
-                            if (showOriginal) "Original" else "Stencil",
+                            if (showCompare) "Comparar" else "Stencil",
                             style = MaterialTheme.typography.labelSmall,
                             color = Color.White
                         )
                     }
+
+                    // Hint de zoom si hay imagen
+                    if (scale == 1f) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(8.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color.Black.copy(alpha = 0.4f))
+                                .padding(horizontal = 6.dp, vertical = 3.dp)
+                        ) {
+                            Text("Pellizca para zoom", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.7f))
+                        }
+                    }
+
                 } else if (isProcessing) {
                     CircularProgressIndicator(color = Color.White)
                 } else {
-                    Text("Selecciona una imagen", color = Color.Gray)
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("📷", style = MaterialTheme.typography.displaySmall)
+                        Spacer(Modifier.height(8.dp))
+                        Text("Selecciona una imagen", color = Color.Gray)
+                    }
                 }
 
                 if (isProcessing) {
                     Box(
                         Modifier
                             .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.3f)),
+                            .background(Color.Black.copy(alpha = 0.35f)),
                         contentAlignment = Alignment.Center
                     ) {
                         CircularProgressIndicator(color = Color.White)
@@ -247,37 +369,46 @@ fun EditorScreen(
                 }
             }
 
-            Column(modifier = Modifier.padding(16.dp)) {
+            Column(modifier = Modifier.padding(horizontal = 16.dp)) {
 
-                // --- Botones de acción superiores ---
+                Spacer(Modifier.height(12.dp))
+
+                // --- Botones de acción ---
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // "Elegir imagen" solo disponible en modo nuevo
                     Box(modifier = Modifier.weight(1f)) {
                         Button(
                             onClick = { imagePicker.launch("image/*") },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .alpha(if (isEditMode) 0.38f else 1f),
+                                .alpha(if (isEditMode) 0.38f else 1f)
+                                .semantics { contentDescription = "Elegir imagen de galería" },
                             enabled = !isEditMode
                         ) { Text("Elegir imagen") }
                     }
 
-                    if (original != null) {
+                    if (original != null && stencil != null) {
                         Button(
-                            onClick = { showOriginal = !showOriginal },
-                            modifier = Modifier.weight(1f),
+                            onClick = { showCompare = !showCompare },
+                            modifier = Modifier
+                                .weight(1f)
+                                .semantics { contentDescription = if (showCompare) "Ver solo stencil" else "Comparar original con stencil" },
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                                containerColor = if (showCompare)
+                                    MaterialTheme.colorScheme.primary
+                                else
+                                    MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = if (showCompare)
+                                    MaterialTheme.colorScheme.onPrimary
+                                else
+                                    MaterialTheme.colorScheme.onSecondaryContainer
                             )
-                        ) { Text(if (showOriginal) "Ver stencil" else "Ver original") }
+                        ) { Text(if (showCompare) "Stencil" else "Comparar") }
                     }
                 }
 
-                // Aviso cuando está bloqueado el selector de imagen
                 if (isEditMode) {
                     Spacer(Modifier.height(4.dp))
                     Text(
@@ -287,11 +418,65 @@ fun EditorScreen(
                     )
                 }
 
+                // --- Slider Before/After ---
+                AnimatedVisibility(visible = showCompare && original != null && stencil != null) {
+                    Column {
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Stencil", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                            Text("Original", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Slider(
+                            value = compareSlider,
+                            onValueChange = { compareSlider = it },
+                            valueRange = 0f..1f,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .semantics { contentDescription = "Slider de comparación antes y después" },
+                            colors = SliderDefaults.colors(
+                                thumbColor = MaterialTheme.colorScheme.primary,
+                                activeTrackColor = MaterialTheme.colorScheme.primary
+                            )
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+
+                // --- Presets ---
+                Text(
+                    "Estilos rápidos",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.height(8.dp))
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(vertical = 4.dp)
+                ) {
+                    items(StencilPreset.entries) { preset ->
+                        ElevatedFilterChip(
+                            selected = params == preset.params,
+                            onClick = { viewModel.applyPreset(preset) },
+                            label = { Text(preset.label) },
+                            modifier = Modifier.semantics { contentDescription = "Aplicar estilo ${preset.label}" },
+                            colors = FilterChipDefaults.elevatedFilterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        )
+                    }
+                }
+
                 Spacer(Modifier.height(20.dp))
 
                 // --- Parámetros ---
                 Text(
-                    "Parámetros",
+                    "Ajuste fino",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
@@ -302,37 +487,43 @@ fun EditorScreen(
                 ParamSlider(
                     label = "Umbral de bordes",
                     value = params.edgeThreshold,
-                    description = "Menor = más bordes detectados"
+                    description = "Menor = más bordes detectados",
+                    semanticLabel = "Ajustar umbral de bordes"
                 ) { viewModel.updateParams(params.copy(edgeThreshold = it)) }
 
                 ParamSlider(
                     label = "Grosor de línea",
                     value = params.lineThickness,
-                    description = "Engrosamiento de trazos"
+                    description = "Engrosamiento de trazos",
+                    semanticLabel = "Ajustar grosor de línea"
                 ) { viewModel.updateParams(params.copy(lineThickness = it)) }
 
                 ParamSlider(
                     label = "Intensidad de sombra",
                     value = params.shadowIntensity,
-                    description = "Simulación de degradado/sombreado"
+                    description = "Simulación de degradado/sombreado",
+                    semanticLabel = "Ajustar intensidad de sombra"
                 ) { viewModel.updateParams(params.copy(shadowIntensity = it)) }
 
                 ParamSlider(
                     label = "Contraste",
                     value = params.contrast,
-                    description = "Realce de detalles antes del proceso"
+                    description = "Realce de detalles antes del proceso",
+                    semanticLabel = "Ajustar contraste"
                 ) { viewModel.updateParams(params.copy(contrast = it)) }
 
                 ParamSlider(
                     label = "Reducción de ruido",
                     value = params.blurRadius,
-                    description = "Suaviza la imagen antes de detectar bordes"
+                    description = "Suaviza la imagen antes de detectar bordes",
+                    semanticLabel = "Ajustar reducción de ruido"
                 ) { viewModel.updateParams(params.copy(blurRadius = it)) }
 
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 8.dp),
+                        .padding(vertical = 8.dp)
+                        .semantics { contentDescription = "Invertir colores del stencil" },
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -367,38 +558,104 @@ fun EditorScreen(
                             value = stencilName,
                             onValueChange = { stencilName = it },
                             label = { Text("Nombre del stencil") },
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .semantics { contentDescription = "Nombre del stencil" },
                             singleLine = true
                         )
                         Spacer(Modifier.height(12.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
                                 onClick = { viewModel.saveStencil(stencilName) },
-                                modifier = Modifier.weight(1f),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .semantics { contentDescription = if (isEditMode) "Actualizar stencil guardado" else "Guardar stencil" },
                                 enabled = !isProcessing
                             ) {
-                                Icon(Icons.Default.Check, null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(6.dp))
                                 Text(if (isEditMode) "Actualizar" else "Guardar")
                             }
                             Button(
-                                onClick = { scope.launch { exportToGallery(ctx, stencil!!) } },
-                                modifier = Modifier.weight(1f),
+                                onClick = {
+                                    scope.launch { exportToGallery(ctx, stencil!!) }
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .semantics { contentDescription = "Exportar stencil a la galería" },
                                 enabled = !isProcessing,
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = MaterialTheme.colorScheme.secondaryContainer,
                                     contentColor = MaterialTheme.colorScheme.onSecondaryContainer
                                 )
                             ) {
-                                Icon(Icons.Default.Share, null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(6.dp))
-                                Text("Exportar PNG")
+                                Text("Galería")
                             }
                         }
                     }
                 }
 
-                Spacer(Modifier.height(24.dp))
+                Spacer(Modifier.height(32.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun BeforeAfterView(
+    original: Bitmap,
+    stencil: Bitmap,
+    splitRatio: Float,
+    scale: Float,
+    offsetX: Float,
+    offsetY: Float
+) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Base: original image
+        Image(
+            bitmap = original.asImageBitmap(),
+            contentDescription = "Imagen original",
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer(scaleX = scale, scaleY = scale, translationX = offsetX, translationY = offsetY)
+        )
+        // Overlay: stencil clipped from left by splitRatio
+        val animatedRatio by animateFloatAsState(targetValue = splitRatio, label = "split")
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer(
+                    scaleX = scale,
+                    scaleY = scale,
+                    translationX = offsetX,
+                    translationY = offsetY
+                )
+        ) {
+            Image(
+                bitmap = stencil.asImageBitmap(),
+                contentDescription = "Stencil procesado",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+        // Divider line
+        if (splitRatio > 0f && splitRatio < 1f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(start = (splitRatio * 100).dp.let { it })
+            ) {
+                // vertical divider line visual hint
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .width(2.dp)
+                        .height(60.dp)
+                        .background(Color.White.copy(alpha = 0.8f), RoundedCornerShape(1.dp))
+                )
             }
         }
     }
@@ -409,6 +666,7 @@ private fun ParamSlider(
     label: String,
     value: Float,
     description: String,
+    semanticLabel: String,
     onValueChange: (Float) -> Unit
 ) {
     Column(modifier = Modifier.padding(vertical = 6.dp)) {
@@ -429,7 +687,9 @@ private fun ParamSlider(
             value = value,
             onValueChange = onValueChange,
             valueRange = 0f..1f,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics { contentDescription = semanticLabel },
             colors = SliderDefaults.colors(
                 thumbColor = MaterialTheme.colorScheme.primary,
                 activeTrackColor = MaterialTheme.colorScheme.primary

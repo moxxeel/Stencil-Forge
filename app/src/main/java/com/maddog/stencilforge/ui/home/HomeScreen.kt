@@ -47,6 +47,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -89,9 +91,10 @@ fun HomeScreen(
                 onClick = onNewStencil,
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary,
-                shape = CircleShape
+                shape = CircleShape,
+                modifier = Modifier.semantics { contentDescription = "Crear nuevo stencil" }
             ) {
-                Icon(Icons.Default.Add, contentDescription = "Nuevo stencil")
+                Icon(Icons.Default.Add, contentDescription = null)
             }
         }
     ) { padding ->
@@ -151,6 +154,7 @@ private fun StencilCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
+            .semantics { contentDescription = "Stencil: ${stencil.name}, creado el $dateStr. Toca para editar." }
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(
@@ -162,7 +166,7 @@ private fun StencilCard(
             Box {
                 AsyncImage(
                     model = File(stencil.stencilImagePath),
-                    contentDescription = stencil.name,
+                    contentDescription = null,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -180,10 +184,11 @@ private fun StencilCard(
                             MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
                             CircleShape
                         )
+                        .semantics { contentDescription = "Eliminar stencil ${stencil.name}" }
                 ) {
                     Icon(
                         Icons.Default.Delete,
-                        contentDescription = "Eliminar",
+                        contentDescription = null,
                         tint = MaterialTheme.colorScheme.error,
                         modifier = Modifier.size(18.dp)
                     )

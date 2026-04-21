@@ -5,6 +5,7 @@ import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Update
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -17,6 +18,9 @@ interface StencilDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertStencil(stencil: StencilEntity): Long
+
+    @Update
+    suspend fun updateStencil(stencil: StencilEntity)
 
     @Delete
     suspend fun deleteStencil(stencil: StencilEntity)

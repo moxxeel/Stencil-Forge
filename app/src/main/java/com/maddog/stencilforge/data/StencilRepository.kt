@@ -11,6 +11,8 @@ class StencilRepository(context: Context) {
 
     suspend fun saveStencil(stencil: StencilEntity): Long = dao.insertStencil(stencil)
 
+    suspend fun updateStencil(stencil: StencilEntity) = dao.updateStencil(stencil)
+
     suspend fun deleteStencil(stencil: StencilEntity) {
         File(stencil.stencilImagePath).takeIf { it.exists() }?.delete()
         dao.deleteStencil(stencil)

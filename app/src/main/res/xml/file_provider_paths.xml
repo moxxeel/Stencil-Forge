@@ -2,4 +2,5 @@
 <paths>
     <external-files-path name="stencils" path="Pictures/StencilForge/" />
     <files-path name="stencils_internal" path="stencils/" />
+    <cache-path name="share_cache" path="share/" />
 </paths>
