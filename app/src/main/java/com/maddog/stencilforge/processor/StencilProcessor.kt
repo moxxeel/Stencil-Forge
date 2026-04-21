@@ -9,16 +9,15 @@ import kotlin.math.sqrt
 
 /**
  * Pipeline:
- *  1. Grayscale
- *  2. Contrast stretch
- *  3. Guided filter (edge-preserving, O(n) — replaces slow bilateral)
+ *  1. Grayscale (perceptual weights)
+ *  2. CLAHE-style histogram equalization (improves local contrast)
+ *  3. Gaussian blur (noise reduction, separable O(n*r))
  *  4. Sobel gradients
  *  5. Non-maximum suppression → 1-px-wide edges
- *  6. Hysteresis threshold (double threshold + BFS)
- *  7. Erosion (removes isolated noise dots)
- *  8. Shadow simulation
- *  9. Dilation (line thickness)
- * 10. Optional inversion
+ *  6. Hysteresis threshold (8-connected BFS)
+ *  7. Erosion (remove isolated dots)
+ *  8. Dilation (line thickness)
+ *  9. Optional inversion
  */
 object StencilProcessor {
 
@@ -27,14 +26,14 @@ object StencilProcessor {
         val h = source.height
 
         val gray       = toGrayscale(source)
-        val contrasted = applyContrast(gray, w, h, params.contrast)
-        val filtered   = guidedFilter(contrasted, w, h, guidedRadius(params.blurRadius), guidedEps(params.blurRadius))
-        val (mag, gx, gy, angles) = sobelEdges(filtered, w, h)
-        val suppressed = nonMaxSuppression(mag, angles, w, h)
-        val edges      = hysteresisThreshold(suppressed, w, h, params.edgeThreshold)
+        val equalized  = claheEqualize(gray, w, h, params.contrast)
+        val sharpened  = if (params.sharpness > 0f) unsharpMask(equalized, w, h, params.sharpness) else equalized
+        val blurred    = gaussianBlur(sharpened, w, h, blurRadius(params.blurRadius))
+        val (mag, ang) = sobelEdges(blurred, w, h)
+        val suppressed = nonMaxSuppression(mag, ang, w, h)
+        val edges      = hysteresisThreshold(suppressed, w, h, params.edgeThreshold, params.edgeConnectivity)
         val clean      = erode(edges, w, h)
-        val withShadow = applyShadow(clean, gx, gy, w, h, params.shadowIntensity)
-        val thick      = dilate(withShadow, w, h, dilationSize(params.lineThickness))
+        val thick      = dilate(clean, w, h, dilationSize(params.lineThickness))
         val result     = if (params.invertColors) invert(thick) else thick
         return toBitmap(result, w, h)
     }
@@ -54,108 +53,150 @@ object StencilProcessor {
         }
     }
 
-    // --- Step 2: Contrast stretch ---
+    // --- Step 2: CLAHE-style equalization ---
+    // Divides image into tiles, equalizes each tile's histogram independently,
+    // then blends (bilinear interpolation) between tiles so there are no hard borders.
+    // This dramatically improves contrast in dark fur/hair without blowing out bright areas.
+    // `strength` (0..1) blends between original and fully equalized.
 
-    private fun applyContrast(gray: IntArray, w: Int, h: Int, amount: Float): IntArray {
-        val factor = 1f + amount * 2.5f
-        return IntArray(gray.size) { i ->
-            val v = gray[i] / 255f
-            val stretched = ((v - 0.5f) * factor + 0.5f).coerceIn(0f, 1f)
-            (stretched * 255).roundToInt()
+    private fun claheEqualize(gray: IntArray, w: Int, h: Int, strength: Float): IntArray {
+        val tileW = (w / 4).coerceAtLeast(32)
+        val tileH = (h / 4).coerceAtLeast(32)
+        val tilesX = (w + tileW - 1) / tileW
+        val tilesY = (h + tileH - 1) / tileH
+
+        // Build a CDF-based LUT for each tile
+        val luts = Array(tilesY) { ty ->
+            Array(tilesX) { tx ->
+                val x0 = tx * tileW; val x1 = (x0 + tileW).coerceAtMost(w)
+                val y0 = ty * tileH; val y1 = (y0 + tileH).coerceAtMost(h)
+                val hist = IntArray(256)
+                for (y in y0 until y1) for (x in x0 until x1) hist[gray[y * w + x]]++
+                val total = (x1 - x0) * (y1 - y0)
+                // Clip histogram to reduce over-amplification (the C in CLAHE)
+                val clipLimit = (total / 256 * 3).coerceAtLeast(1)
+                var excess = 0
+                for (i in 0..255) { if (hist[i] > clipLimit) { excess += hist[i] - clipLimit; hist[i] = clipLimit } }
+                val redistribute = excess / 256
+                for (i in 0..255) hist[i] += redistribute
+                // Build cumulative distribution → LUT
+                val cdf = IntArray(256)
+                cdf[0] = hist[0]
+                for (i in 1..255) cdf[i] = cdf[i - 1] + hist[i]
+                val cdfMin = cdf.first { it > 0 }
+                IntArray(256) { i ->
+                    ((cdf[i] - cdfMin).toFloat() / (total - cdfMin) * 255f).roundToInt().coerceIn(0, 255)
+                }
+            }
+        }
+
+        // Bilinear interpolation between tile LUTs
+        return IntArray(w * h) { idx ->
+            val x = idx % w; val y = idx / w
+            val v = gray[idx]
+
+            // Tile coordinates (center-based)
+            val tx = ((x - tileW / 2f) / tileW).coerceIn(0f, (tilesX - 1).toFloat())
+            val ty = ((y - tileH / 2f) / tileH).coerceIn(0f, (tilesY - 1).toFloat())
+            val tx0 = tx.toInt().coerceIn(0, tilesX - 1)
+            val ty0 = ty.toInt().coerceIn(0, tilesY - 1)
+            val tx1 = (tx0 + 1).coerceIn(0, tilesX - 1)
+            val ty1 = (ty0 + 1).coerceIn(0, tilesY - 1)
+            val fx = tx - tx0; val fy = ty - ty0
+
+            val v00 = luts[ty0][tx0][v].toFloat()
+            val v10 = luts[ty0][tx1][v].toFloat()
+            val v01 = luts[ty1][tx0][v].toFloat()
+            val v11 = luts[ty1][tx1][v].toFloat()
+            val equalized = (v00 * (1 - fx) * (1 - fy) + v10 * fx * (1 - fy) +
+                             v01 * (1 - fx) * fy       + v11 * fx * fy).roundToInt().coerceIn(0, 255)
+
+            // Blend original + equalized based on strength param
+            (v + (equalized - v) * strength).roundToInt().coerceIn(0, 255)
         }
     }
 
-    // --- Step 3: Guided filter (edge-preserving, O(n)) ---
-    // Uses box-filter mean/variance: each pass is a 1-D sliding window → O(w*h*r) total
-    // but implemented as prefix sums so it's truly O(w*h) regardless of radius.
-    // eps controls smoothing strength: high eps → more smoothing of textures.
+    // --- Step 2.5: Unsharp mask — enhances fine details before edge detection ---
+    // Subtracts a blurred copy from the original: result = original + strength*(original - blurred)
 
-    private fun guidedRadius(param: Float): Int = (param * 7 + 3).roundToInt().coerceIn(3, 10)
-    private fun guidedEps(param: Float): Float  = (param * param * 0.08f + 0.005f)  // 0.005..0.085
+    private fun unsharpMask(gray: IntArray, w: Int, h: Int, strength: Float): IntArray {
+        val blurred = gaussianBlur(gray, w, h, 2)
+        return IntArray(gray.size) { i ->
+            (gray[i] + strength * (gray[i] - blurred[i])).roundToInt().coerceIn(0, 255)
+        }
+    }
 
-    private fun guidedFilter(src: IntArray, w: Int, h: Int, r: Int, eps: Float): IntArray {
-        // Normalize to 0..1
-        val I = FloatArray(src.size) { src[it] / 255f }
+    // --- Step 3: Gaussian blur (separable, O(n*r)) ---
 
-        // Box-filter mean using prefix sums
-        fun boxMean(arr: FloatArray): FloatArray {
-            val tmp = FloatArray(arr.size)
-            // horizontal
-            for (y in 0 until h) {
-                var sum = 0f
-                for (x in 0..r) sum += arr[y * w + x.coerceIn(0, w - 1)]
-                for (x in 0 until w) {
-                    if (x > 0) {
-                        sum -= arr[y * w + (x - r - 1).coerceAtLeast(0)]
-                        if (x + r < w) sum += arr[y * w + (x + r)]
-                    }
-                    tmp[y * w + x] = sum / (2 * r + 1).toFloat()
-                }
-            }
-            val out = FloatArray(arr.size)
-            // vertical
+    private fun blurRadius(param: Float): Int = (param * 5 + 1).roundToInt().coerceIn(1, 6)
+
+    private fun gaussianBlur(gray: IntArray, w: Int, h: Int, radius: Int): IntArray {
+        if (radius <= 1) return gray
+        val kernel = gaussianKernel(radius)
+        val tmp = FloatArray(gray.size)
+        // Horizontal pass
+        for (y in 0 until h) {
             for (x in 0 until w) {
-                var sum = 0f
-                for (y in 0..r) sum += tmp[y.coerceIn(0, h - 1) * w + x]
-                for (y in 0 until h) {
-                    if (y > 0) {
-                        sum -= tmp[(y - r - 1).coerceAtLeast(0) * w + x]
-                        if (y + r < h) sum += tmp[(y + r) * w + x]
-                    }
-                    out[y * w + x] = sum / (2 * r + 1).toFloat()
+                var sum = 0f; var wt = 0f
+                for (k in kernel.indices) {
+                    val nx = (x + k - radius).coerceIn(0, w - 1)
+                    val kv = kernel[k]
+                    sum += gray[y * w + nx] * kv; wt += kv
                 }
+                tmp[y * w + x] = sum / wt
             }
-            return out
         }
-
-        val meanI  = boxMean(I)
-        val meanI2 = boxMean(FloatArray(I.size) { I[it] * I[it] })
-        val varI   = FloatArray(I.size) { meanI2[it] - meanI[it] * meanI[it] }
-
-        // Linear coefficients: a = var / (var + eps), b = mean*(1-a)
-        val a = FloatArray(I.size) { varI[it] / (varI[it] + eps) }
-        val b = FloatArray(I.size) { meanI[it] * (1f - a[it]) }
-
-        val meanA = boxMean(a)
-        val meanB = boxMean(b)
-
-        return IntArray(I.size) { i ->
-            ((meanA[i] * I[i] + meanB[i]) * 255f).roundToInt().coerceIn(0, 255)
+        val out = IntArray(gray.size)
+        // Vertical pass
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                var sum = 0f; var wt = 0f
+                for (k in kernel.indices) {
+                    val ny = (y + k - radius).coerceIn(0, h - 1)
+                    val kv = kernel[k]
+                    sum += tmp[ny * w + x] * kv; wt += kv
+                }
+                out[y * w + x] = (sum / wt).roundToInt().coerceIn(0, 255)
+            }
         }
+        return out
+    }
+
+    private fun gaussianKernel(radius: Int): FloatArray {
+        val size = radius * 2 + 1
+        val sigma = radius / 2.0
+        var sum = 0f
+        val k = FloatArray(size) { i ->
+            val x = (i - radius).toDouble()
+            Math.exp(-x * x / (2 * sigma * sigma)).toFloat().also { sum += it }
+        }
+        return FloatArray(size) { k[it] / sum }
     }
 
     // --- Step 4: Sobel ---
 
-    private data class SobelResult(
-        val magnitude: FloatArray,
-        val gx: FloatArray,
-        val gy: FloatArray,
-        val angles: FloatArray
-    )
+    private data class SobelResult(val magnitude: FloatArray, val angles: FloatArray)
 
     private fun sobelEdges(gray: IntArray, w: Int, h: Int): SobelResult {
         val mag = FloatArray(w * h)
-        val gx  = FloatArray(w * h)
-        val gy  = FloatArray(w * h)
         val ang = FloatArray(w * h)
         for (y in 1 until h - 1) {
             for (x in 1 until w - 1) {
                 val tl = gray[(y-1)*w+(x-1)].toFloat(); val tc = gray[(y-1)*w+x].toFloat(); val tr = gray[(y-1)*w+(x+1)].toFloat()
-                val ml = gray[y*w+(x-1)].toFloat();                                           val mr = gray[y*w+(x+1)].toFloat()
+                val ml = gray[y*w+(x-1)].toFloat()                                          ; val mr = gray[y*w+(x+1)].toFloat()
                 val bl = gray[(y+1)*w+(x-1)].toFloat(); val bc = gray[(y+1)*w+x].toFloat(); val br = gray[(y+1)*w+(x+1)].toFloat()
                 val sx = -tl - 2*ml - bl + tr + 2*mr + br
                 val sy = -tl - 2*tc - tr + bl + 2*bc + br
-                gx[y*w+x] = sx; gy[y*w+x] = sy
                 mag[y*w+x] = sqrt(sx*sx + sy*sy)
                 ang[y*w+x] = atan2(sy, sx).toFloat()
             }
         }
         val max = mag.max().takeIf { it > 0f } ?: 1f
         for (i in mag.indices) mag[i] /= max
-        return SobelResult(mag, gx, gy, ang)
+        return SobelResult(mag, ang)
     }
 
-    // --- Step 5: Non-maximum suppression ---
+    // --- Step 5: Non-maximum suppression → 1-px-wide edges ---
 
     private fun nonMaxSuppression(mag: FloatArray, angles: FloatArray, w: Int, h: Int): FloatArray {
         val out = FloatArray(mag.size)
@@ -175,12 +216,13 @@ object StencilProcessor {
         return out
     }
 
-    // --- Step 6: Hysteresis threshold ---
+    // --- Step 6: Hysteresis threshold (8-connected BFS) ---
 
-    private fun hysteresisThreshold(suppressed: FloatArray, w: Int, h: Int, threshold: Float): IntArray {
-        val high = threshold * 0.5f + 0.05f
-        val low  = high * 0.35f
-
+    private fun hysteresisThreshold(suppressed: FloatArray, w: Int, h: Int, threshold: Float, edgeConnectivity: Float = 0.4f): IntArray {
+        // Map slider 0..1 → high: 0.08..0.58 — wider usable range
+        val high = threshold * 0.5f + 0.08f
+        // edgeConnectivity: low/high ratio — higher = more weak edges connected (0.1..0.7)
+        val low  = high * (edgeConnectivity * 0.6f + 0.1f)
         val STRONG = 2; val WEAK = 1
         val label = IntArray(suppressed.size) { i ->
             when {
@@ -194,7 +236,8 @@ object StencilProcessor {
         while (queue.isNotEmpty()) {
             val idx = queue.removeFirst()
             val y = idx / w; val x = idx % w
-            for ((dy, dx) in listOf(-1 to 0, 1 to 0, 0 to -1, 0 to 1)) {
+            for (dy in -1..1) for (dx in -1..1) {
+                if (dy == 0 && dx == 0) continue
                 val ny = y + dy; val nx = x + dx
                 if (ny < 0 || ny >= h || nx < 0 || nx >= w) continue
                 val ni = ny * w + nx
@@ -204,7 +247,7 @@ object StencilProcessor {
         return IntArray(suppressed.size) { i -> if (label[i] == STRONG) 0 else 255 }
     }
 
-    // --- Step 7: Erosion — kills isolated noise dots ---
+    // --- Step 7: Erosion — removes isolated noise dots ---
 
     private fun erode(edges: IntArray, w: Int, h: Int): IntArray {
         val out = edges.copyOf()
@@ -222,29 +265,7 @@ object StencilProcessor {
         return out
     }
 
-    // --- Step 8: Shadow simulation ---
-
-    private fun applyShadow(
-        edges: IntArray, gx: FloatArray, gy: FloatArray,
-        w: Int, h: Int, intensity: Float
-    ): IntArray {
-        if (intensity < 0.05f) return edges
-        val out = edges.copyOf()
-        val ss  = intensity * 0.85f
-        for (y in 0 until h) {
-            for (x in 0 until w) {
-                val idx = y * w + x
-                if (out[idx] == 0) continue
-                val len = sqrt(gx[idx]*gx[idx] + gy[idx]*gy[idx])
-                if (len < 1f) continue
-                val shade = ((len / 1020f).coerceIn(0f, 1f) * ss * 255f).roundToInt()
-                if (shade > 30) out[idx] = (255 - shade).coerceAtLeast(0)
-            }
-        }
-        return out
-    }
-
-    // --- Step 9: Dilation ---
+    // --- Step 8: Dilation ---
 
     private fun dilationSize(param: Float): Int = (param * 2).roundToInt()
 
@@ -262,7 +283,7 @@ object StencilProcessor {
         return out
     }
 
-    // --- Step 10: Invert ---
+    // --- Step 9: Invert ---
 
     private fun invert(src: IntArray): IntArray = IntArray(src.size) { 255 - src[it] }
 
@@ -275,4 +296,10 @@ object StencilProcessor {
     }
 
     fun processAndConvert(source: Bitmap, params: StencilParams): Bitmap = process(source, params)
+
+    fun toGrayscaleBitmap(source: Bitmap): Bitmap {
+        val w = source.width; val h = source.height
+        val gray = toGrayscale(source)
+        return toBitmap(gray, w, h)
+    }
 }

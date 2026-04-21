@@ -15,5 +15,7 @@ data class StencilEntity(
     val lineThickness: Float = 0.5f,
     val contrast: Float = 0.5f,
     val invertColors: Boolean = false,
-    val blurRadius: Float = 0.3f
+    val blurRadius: Float = 0.3f,
+    val sharpness: Float = 0.0f,
+    val edgeConnectivity: Float = 0.4f
 )

@@ -105,19 +105,21 @@ fun EditorScreen(
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    val original     by viewModel.originalBitmap.collectAsState()
-    val stencil      by viewModel.stencilBitmap.collectAsState()
-    val params       by viewModel.params.collectAsState()
-    val isProcessing by viewModel.isProcessing.collectAsState()
-    val saveResult   by viewModel.saveResult.collectAsState()
-    val loadedStencil by viewModel.loadedStencil.collectAsState()
-    val errorMessage by viewModel.errorMessage.collectAsState()
-    val canUndo      by viewModel.canUndo.collectAsState()
-    val canRedo      by viewModel.canRedo.collectAsState()
+    val original        by viewModel.originalBitmap.collectAsState()
+    val stencil         by viewModel.stencilBitmap.collectAsState()
+    val params          by viewModel.params.collectAsState()
+    val isProcessing    by viewModel.isProcessing.collectAsState()
+    val saveResult      by viewModel.saveResult.collectAsState()
+    val loadedStencil   by viewModel.loadedStencil.collectAsState()
+    val errorMessage    by viewModel.errorMessage.collectAsState()
+    val canUndo         by viewModel.canUndo.collectAsState()
+    val canRedo         by viewModel.canRedo.collectAsState()
+    val showingOriginal by viewModel.showingOriginal.collectAsState()
+    val processMode     by viewModel.processMode.collectAsState()
 
     val isEditMode = stencilId != null
 
-    var stencilName     by remember { mutableStateOf("") }
+    var stencilName      by remember { mutableStateOf("") }
     var showDeleteDialog by remember { mutableStateOf(false) }
     // true  = estado inicial: imagen 65% / menú 35%  (menú visible, botón ↓ para expandir)
     // false = menú expandido: imagen 40% / menú 60%  (botón ↑ para volver)
@@ -268,9 +270,10 @@ fun EditorScreen(
                 contentAlignment = Alignment.Center
             ) {
                 if (original != null && stencil != null) {
+                    val displayBitmap = if (showingOriginal) original!! else stencil!!
                     Image(
-                        bitmap = stencil!!.asImageBitmap(),
-                        contentDescription = "Vista previa del stencil procesado",
+                        bitmap = displayBitmap.asImageBitmap(),
+                        contentDescription = if (showingOriginal) "Imagen original" else "Vista previa del stencil procesado",
                         contentScale = ContentScale.Fit,
                         modifier = Modifier
                             .fillMaxSize()
@@ -285,18 +288,62 @@ fun EditorScreen(
                             .background(Color.Black.copy(alpha = 0.6f))
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
-                        Text("Stencil", style = MaterialTheme.typography.labelSmall, color = Color.White)
+                        Text(
+                            if (showingOriginal) "Original" else if (processMode == EditorViewModel.ProcessMode.GRAYSCALE) "B&N" else "Stencil",
+                            style = MaterialTheme.typography.labelSmall, color = Color.White
+                        )
                     }
-                    if (scale == 1f) {
-                        Box(
+                    // Rotate buttons — bottom left
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        IconButton(
+                            onClick = { viewModel.rotateImage(false) },
                             modifier = Modifier
-                                .align(Alignment.BottomEnd)
-                                .padding(8.dp)
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(Color.Black.copy(alpha = 0.4f))
-                                .padding(horizontal = 6.dp, vertical = 3.dp)
+                                .size(36.dp)
+                                .background(Color.Black.copy(alpha = 0.5f), CircleShape)
                         ) {
-                            Text("Pellizca para zoom", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.7f))
+                            Icon(
+                                Icons.Default.Refresh,
+                                contentDescription = "Rotar izquierda",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp).graphicsLayer(scaleX = -1f)
+                            )
+                        }
+                        IconButton(
+                            onClick = { viewModel.rotateImage(true) },
+                            modifier = Modifier
+                                .size(36.dp)
+                                .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Rotar derecha", tint = Color.White, modifier = Modifier.size(20.dp))
+                        }
+                    }
+                    // Toggle original/processed — bottom right
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(8.dp)
+                            .background(
+                                if (showingOriginal) MaterialTheme.colorScheme.primary.copy(alpha = 0.85f)
+                                else Color.Black.copy(alpha = 0.5f),
+                                RoundedCornerShape(8.dp)
+                            )
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        TextButton(
+                            onClick = { viewModel.toggleShowOriginal() },
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text(
+                                if (showingOriginal) "Ver stencil" else "Ver original",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
                     }
                 } else if (isProcessing) {
@@ -369,65 +416,108 @@ fun EditorScreen(
                         )
                     }
 
+                    val isStencilMode = processMode == EditorViewModel.ProcessMode.STENCIL
+
                     Spacer(Modifier.height(16.dp))
 
-                    // Presets
-                    Text("Estilos rápidos", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    // Modo de conversión
+                    Text("Modo", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.height(8.dp))
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        contentPadding = PaddingValues(vertical = 4.dp)
-                    ) {
-                        items(StencilPreset.entries) { preset ->
-                            ElevatedFilterChip(
-                                selected = params == preset.params,
-                                onClick = { viewModel.applyPreset(preset) },
-                                label = { Text(preset.label) },
-                                modifier = Modifier.semantics { contentDescription = "Aplicar estilo ${preset.label}" },
-                                colors = FilterChipDefaults.elevatedFilterChipColors(
-                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ElevatedFilterChip(
+                            selected = isStencilMode,
+                            onClick = { viewModel.setProcessMode(EditorViewModel.ProcessMode.STENCIL) },
+                            label = { Text("Stencil") },
+                            colors = FilterChipDefaults.elevatedFilterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
                             )
+                        )
+                        ElevatedFilterChip(
+                            selected = !isStencilMode,
+                            onClick = { viewModel.setProcessMode(EditorViewModel.ProcessMode.GRAYSCALE) },
+                            label = { Text("Blanco y negro") },
+                            colors = FilterChipDefaults.elevatedFilterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        )
+                    }
+
+                    if (isStencilMode) {
+                        Spacer(Modifier.height(16.dp))
+
+                        // Presets
+                        Text("Estilos rápidos", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.height(8.dp))
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            contentPadding = PaddingValues(vertical = 4.dp)
+                        ) {
+                            items(StencilPreset.entries) { preset ->
+                                ElevatedFilterChip(
+                                    selected = params == preset.params,
+                                    onClick = { viewModel.applyPreset(preset) },
+                                    label = { Text(preset.label) },
+                                    modifier = Modifier.semantics { contentDescription = "Aplicar estilo ${preset.label}" },
+                                    colors = FilterChipDefaults.elevatedFilterChipColors(
+                                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                )
+                            }
                         }
-                    }
 
-                    Spacer(Modifier.height(20.dp))
+                        Spacer(Modifier.height(20.dp))
 
-                    // Ajuste fino
-                    Text("Ajuste fino", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                    Spacer(Modifier.height(8.dp))
+                        // Ajuste fino
+                        Text("Ajuste fino", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.height(8.dp))
 
-                    ParamSlider("Umbral de bordes", params.edgeThreshold, "Menor = más bordes detectados", "Ajustar umbral de bordes") {
-                        viewModel.updateParams(params.copy(edgeThreshold = it))
-                    }
-                    ParamSlider("Grosor de línea", params.lineThickness, "Engrosamiento de trazos", "Ajustar grosor de línea") {
-                        viewModel.updateParams(params.copy(lineThickness = it))
-                    }
-                    ParamSlider("Intensidad de sombra", params.shadowIntensity, "Simulación de degradado/sombreado", "Ajustar intensidad de sombra") {
-                        viewModel.updateParams(params.copy(shadowIntensity = it))
-                    }
-                    ParamSlider("Contraste", params.contrast, "Realce de detalles antes del proceso", "Ajustar contraste") {
-                        viewModel.updateParams(params.copy(contrast = it))
-                    }
-                    ParamSlider("Reducción de ruido", params.blurRadius, "Suaviza la imagen antes de detectar bordes", "Ajustar reducción de ruido") {
-                        viewModel.updateParams(params.copy(blurRadius = it))
-                    }
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 8.dp)
-                            .semantics { contentDescription = "Invertir colores del stencil" },
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("Invertir colores", style = MaterialTheme.typography.bodyMedium)
-                            Text("Líneas blancas sobre fondo negro", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        ParamSlider("Umbral de bordes", params.edgeThreshold, "Menor = más bordes detectados", "Ajustar umbral de bordes") {
+                            viewModel.updateParams(params.copy(edgeThreshold = it))
                         }
-                        Spacer(Modifier.width(8.dp))
-                        Switch(checked = params.invertColors, onCheckedChange = { viewModel.updateParams(params.copy(invertColors = it)) })
+                        ParamSlider("Grosor de línea", params.lineThickness, "Engrosamiento de trazos", "Ajustar grosor de línea") {
+                            viewModel.updateParams(params.copy(lineThickness = it))
+                        }
+                        ParamSlider("Intensidad de sombra", params.shadowIntensity, "Simulación de degradado/sombreado", "Ajustar intensidad de sombra") {
+                            viewModel.updateParams(params.copy(shadowIntensity = it))
+                        }
+                        ParamSlider("Contraste", params.contrast, "Realce de detalles antes del proceso", "Ajustar contraste") {
+                            viewModel.updateParams(params.copy(contrast = it))
+                        }
+                        ParamSlider("Reducción de ruido", params.blurRadius, "Suaviza la imagen antes de detectar bordes", "Ajustar reducción de ruido") {
+                            viewModel.updateParams(params.copy(blurRadius = it))
+                        }
+                        ParamSlider("Nitidez", params.sharpness, "Realza detalles finos antes de detectar bordes", "Ajustar nitidez") {
+                            viewModel.updateParams(params.copy(sharpness = it))
+                        }
+                        ParamSlider("Conectividad de bordes", params.edgeConnectivity, "Cuántos bordes débiles se conectan a bordes fuertes", "Ajustar conectividad de bordes") {
+                            viewModel.updateParams(params.copy(edgeConnectivity = it))
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp)
+                                .semantics { contentDescription = "Invertir colores del stencil" },
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Invertir colores", style = MaterialTheme.typography.bodyMedium)
+                                Text("Líneas blancas sobre fondo negro", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Switch(checked = params.invertColors, onCheckedChange = { viewModel.updateParams(params.copy(invertColors = it)) })
+                        }
+                    } else {
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            "Conversión directa a escala de grises con contraste optimizado",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
 
                     Spacer(Modifier.height(20.dp))

@@ -63,6 +63,45 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     private val _canRedo = MutableStateFlow(false)
     val canRedo: StateFlow<Boolean> = _canRedo.asStateFlow()
 
+    // For toggle-preset: stores params before last preset was applied
+    private var previousParams: StencilParams? = null
+
+    // true while showing original image instead of stencil
+    private val _showingOriginal = MutableStateFlow(false)
+    val showingOriginal: StateFlow<Boolean> = _showingOriginal.asStateFlow()
+
+    enum class ProcessMode { STENCIL, GRAYSCALE }
+
+    private val _processMode = MutableStateFlow(ProcessMode.STENCIL)
+    val processMode: StateFlow<ProcessMode> = _processMode.asStateFlow()
+
+    // Params stored before entering GRAYSCALE mode, to restore on switch back
+    private var paramsBeforeGrayscale: StencilParams? = null
+
+    fun setProcessMode(mode: ProcessMode) {
+        if (_processMode.value == mode) return
+        if (mode == ProcessMode.GRAYSCALE) {
+            paramsBeforeGrayscale = _params.value
+            // Grayscale mode: high contrast, minimal blur, no edge processing artifacts
+            _params.value = StencilParams(
+                edgeThreshold   = 1.0f,
+                shadowIntensity  = 0.0f,
+                lineThickness    = 0.0f,
+                contrast         = 0.8f,
+                blurRadius       = 0.1f,
+                invertColors     = false,
+                sharpness        = 0.0f,
+                edgeConnectivity = 0.0f
+            )
+        } else {
+            paramsBeforeGrayscale?.let { _params.value = it }
+            paramsBeforeGrayscale = null
+        }
+        _processMode.value = mode
+        debounceJob?.cancel()
+        debounceJob = viewModelScope.launch { processWithCurrentParams() }
+    }
+
     private var debounceJob: Job? = null
 
     fun loadExistingStencil(id: Long) {
@@ -80,7 +119,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                     lineThickness = entity.lineThickness,
                     contrast = entity.contrast,
                     invertColors = entity.invertColors,
-                    blurRadius = entity.blurRadius
+                    blurRadius = entity.blurRadius,
+                    sharpness = entity.sharpness,
+                    edgeConnectivity = entity.edgeConnectivity
                 )
                 _params.value = params
                 undoStack.clear()
@@ -126,7 +167,31 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun applyPreset(preset: StencilPreset) {
-        updateParams(preset.params)
+        if (_params.value == preset.params) {
+            // Tapping the active preset restores previous params
+            previousParams?.let { updateParams(it) }
+            previousParams = null
+        } else {
+            previousParams = _params.value
+            updateParams(preset.params)
+        }
+    }
+
+    fun toggleShowOriginal() {
+        _showingOriginal.value = !_showingOriginal.value
+    }
+
+    fun rotateImage(clockwise: Boolean) {
+        val bmp = _originalBitmap.value ?: return
+        val matrix = android.graphics.Matrix().apply {
+            postRotate(if (clockwise) 90f else -90f)
+        }
+        val rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
+        _originalBitmap.value = rotated
+        debounceJob?.cancel()
+        debounceJob = viewModelScope.launch {
+            processWithCurrentParams()
+        }
     }
 
     fun undo() {
@@ -172,7 +237,10 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         _isProcessing.value = true
         try {
             val result = withContext(Dispatchers.Default) {
-                StencilProcessor.processAndConvert(bmp, _params.value)
+                when (_processMode.value) {
+                    ProcessMode.STENCIL   -> StencilProcessor.processAndConvert(bmp, _params.value)
+                    ProcessMode.GRAYSCALE -> StencilProcessor.toGrayscaleBitmap(bmp)
+                }
             }
             _stencilBitmap.value = result
         } catch (e: Exception) {
@@ -218,7 +286,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                     lineThickness = p.lineThickness,
                     contrast = p.contrast,
                     invertColors = p.invertColors,
-                    blurRadius = p.blurRadius
+                    blurRadius = p.blurRadius,
+                    sharpness = p.sharpness,
+                    edgeConnectivity = p.edgeConnectivity
                 )
                 val savedId = repo.saveStencil(entity)
                 _loadedStencil.value = entity.copy(id = savedId)
