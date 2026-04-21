@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <external-files-path name="stencils" path="Pictures/StencilForge/" />
+    <files-path name="stencils_internal" path="stencils/" />
+</paths>

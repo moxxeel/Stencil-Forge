@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">Stencil Forge</string>
+    <string name="new_stencil">Nuevo stencil</string>
+    <string name="edge_threshold">Umbral de bordes</string>
+    <string name="shadow_intensity">Intensidad de sombra</string>
+    <string name="line_thickness">Grosor de línea</string>
+    <string name="contrast">Contraste</string>
+    <string name="invert_colors">Invertir colores</string>
+    <string name="save_stencil">Guardar stencil</string>
+    <string name="export_png">Exportar PNG</string>
+    <string name="choose_image">Elegir imagen</string>
+</resources>
