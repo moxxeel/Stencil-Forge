@@ -12,6 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -21,7 +22,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -31,12 +31,15 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
@@ -85,7 +88,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.maddog.stencilforge.processor.StencilParams
 import com.maddog.stencilforge.processor.StencilPreset
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -103,37 +105,43 @@ fun EditorScreen(
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    val original by viewModel.originalBitmap.collectAsState()
-    val stencil by viewModel.stencilBitmap.collectAsState()
-    val params by viewModel.params.collectAsState()
+    val original     by viewModel.originalBitmap.collectAsState()
+    val stencil      by viewModel.stencilBitmap.collectAsState()
+    val params       by viewModel.params.collectAsState()
     val isProcessing by viewModel.isProcessing.collectAsState()
-    val saveResult by viewModel.saveResult.collectAsState()
+    val saveResult   by viewModel.saveResult.collectAsState()
     val loadedStencil by viewModel.loadedStencil.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
-    val canUndo by viewModel.canUndo.collectAsState()
-    val canRedo by viewModel.canRedo.collectAsState()
+    val canUndo      by viewModel.canUndo.collectAsState()
+    val canRedo      by viewModel.canRedo.collectAsState()
 
     val isEditMode = stencilId != null
 
-    var stencilName by remember { mutableStateOf("") }
-    // 0f = full stencil, 1f = full original (before/after)
-    var compareSlider by remember { mutableFloatStateOf(0f) }
-    var showCompare by remember { mutableStateOf(false) }
+    var stencilName     by remember { mutableStateOf("") }
     var showDeleteDialog by remember { mutableStateOf(false) }
+    // true  = estado inicial: imagen 65% / menú 35%  (menú visible, botón ↓ para expandir)
+    // false = menú expandido: imagen 40% / menú 60%  (botón ↑ para volver)
+    var menuExpanded by remember { mutableStateOf(true) }
 
     // Zoom state
-    var scale by remember { mutableFloatStateOf(1f) }
+    var scale   by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
+
+    // menuExpanded=true → imagen 65%, menuExpanded=false → imagen 40%
+    val imageWeight by animateFloatAsState(
+        targetValue = if (menuExpanded) 0.65f else 0.40f,
+        animationSpec = tween(300),
+        label = "imageWeight"
+    )
+    val panelWeight = 1f - imageWeight
 
     LaunchedEffect(stencilId) {
         if (stencilId != null) viewModel.loadExistingStencil(stencilId)
     }
-
     LaunchedEffect(loadedStencil) {
         loadedStencil?.let { if (stencilName.isBlank()) stencilName = it.name }
     }
-
     LaunchedEffect(saveResult) {
         saveResult?.let { result ->
             when (result) {
@@ -152,7 +160,6 @@ fun EditorScreen(
             }
         }
     }
-
     LaunchedEffect(errorMessage) {
         errorMessage?.let {
             snackbarHostState.showSnackbar(it)
@@ -164,7 +171,6 @@ fun EditorScreen(
         ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         uri?.let {
-            // Reset zoom when new image loaded
             scale = 1f; offsetX = 0f; offsetY = 0f
             viewModel.loadImage(it)
         }
@@ -188,25 +194,17 @@ fun EditorScreen(
     }
 
     Scaffold(
-        snackbarHost = {
-            SnackbarHost(snackbarHostState) { data ->
-                Snackbar(snackbarData = data)
-            }
-        },
+        snackbarHost = { SnackbarHost(snackbarHostState) { data -> Snackbar(snackbarData = data) } },
         topBar = {
             TopAppBar(
                 title = {
                     Text(
-                        if (isEditMode) loadedStencil?.name ?: "Editar stencil"
-                        else "Nuevo stencil",
+                        if (isEditMode) loadedStencil?.name ?: "Editar stencil" else "Nuevo stencil",
                         fontWeight = FontWeight.Bold
                     )
                 },
                 navigationIcon = {
-                    IconButton(
-                        onClick = onBack,
-                        modifier = Modifier.semantics { contentDescription = "Volver atrás" }
-                    ) {
+                    IconButton(onClick = onBack, modifier = Modifier.semantics { contentDescription = "Volver atrás" }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
                     }
                 },
@@ -217,10 +215,8 @@ fun EditorScreen(
                         modifier = Modifier.semantics { contentDescription = "Deshacer" }
                     ) {
                         Icon(
-                            Icons.Default.Refresh,
-                            contentDescription = null,
-                            tint = if (canUndo) MaterialTheme.colorScheme.onSurface
-                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
+                            Icons.Default.Refresh, contentDescription = null,
+                            tint = if (canUndo) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
                             modifier = Modifier.graphicsLayer(scaleX = -1f)
                         )
                     }
@@ -230,94 +226,57 @@ fun EditorScreen(
                         modifier = Modifier.semantics { contentDescription = "Rehacer" }
                     ) {
                         Icon(
-                            Icons.Default.Refresh,
-                            contentDescription = null,
-                            tint = if (canRedo) MaterialTheme.colorScheme.onSurface
-                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+                            Icons.Default.Refresh, contentDescription = null,
+                            tint = if (canRedo) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
                         )
                     }
                     if (stencil != null) {
-                        IconButton(
-                            onClick = { viewModel.shareStencil() },
-                            modifier = Modifier.semantics { contentDescription = "Compartir stencil" }
-                        ) {
+                        IconButton(onClick = { viewModel.shareStencil() }, modifier = Modifier.semantics { contentDescription = "Compartir stencil" }) {
                             Icon(Icons.Default.Share, contentDescription = null)
                         }
                     }
                     if (isEditMode && loadedStencil != null) {
-                        IconButton(
-                            onClick = { showDeleteDialog = true },
-                            modifier = Modifier.semantics { contentDescription = "Eliminar stencil" }
-                        ) {
-                            Icon(
-                                Icons.Default.Delete,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.error
-                            )
+                        IconButton(onClick = { showDeleteDialog = true }, modifier = Modifier.semantics { contentDescription = "Eliminar stencil" }) {
+                            Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
                         }
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                )
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
             )
         }
     ) { padding ->
+        // Layout principal: imagen estática arriba + panel scrolleable abajo
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .verticalScroll(rememberScrollState())
         ) {
-            // --- Preview con zoom y before/after ---
+
+            // ── Imagen FIJA (no scrollea) — 65% o 40% de la pantalla ──────
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .aspectRatio(1f)
+                    .weight(imageWeight)
                     .background(Color(0xFF1A1A1A))
-                    .clip(RoundedCornerShape(0.dp))
                     .pointerInput(Unit) {
                         detectTransformGestures { _, pan, zoom, _ ->
                             scale = (scale * zoom).coerceIn(1f, 5f)
-                            if (scale > 1f) {
-                                offsetX += pan.x
-                                offsetY += pan.y
-                            } else {
-                                offsetX = 0f
-                                offsetY = 0f
-                            }
+                            if (scale > 1f) { offsetX += pan.x; offsetY += pan.y }
+                            else { offsetX = 0f; offsetY = 0f }
                         }
                     },
                 contentAlignment = Alignment.Center
             ) {
                 if (original != null && stencil != null) {
-                    if (showCompare) {
-                        // Before/After split view
-                        BeforeAfterView(
-                            original = original!!,
-                            stencil = stencil!!,
-                            splitRatio = compareSlider,
-                            scale = scale,
-                            offsetX = offsetX,
-                            offsetY = offsetY
-                        )
-                    } else {
-                        Image(
-                            bitmap = stencil!!.asImageBitmap(),
-                            contentDescription = "Vista previa del stencil procesado",
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .graphicsLayer(
-                                    scaleX = scale,
-                                    scaleY = scale,
-                                    translationX = offsetX,
-                                    translationY = offsetY
-                                )
-                        )
-                    }
-
-                    // Badge top-left
+                    Image(
+                        bitmap = stencil!!.asImageBitmap(),
+                        contentDescription = "Vista previa del stencil procesado",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer(scaleX = scale, scaleY = scale, translationX = offsetX, translationY = offsetY)
+                    )
+                    // Badge
                     Box(
                         modifier = Modifier
                             .align(Alignment.TopStart)
@@ -326,14 +285,8 @@ fun EditorScreen(
                             .background(Color.Black.copy(alpha = 0.6f))
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
-                        Text(
-                            if (showCompare) "Comparar" else "Stencil",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.White
-                        )
+                        Text("Stencil", style = MaterialTheme.typography.labelSmall, color = Color.White)
                     }
-
-                    // Hint de zoom si hay imagen
                     if (scale == 1f) {
                         Box(
                             modifier = Modifier
@@ -346,7 +299,6 @@ fun EditorScreen(
                             Text("Pellizca para zoom", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.7f))
                         }
                     }
-
                 } else if (isProcessing) {
                     CircularProgressIndicator(color = Color.White)
                 } else {
@@ -356,307 +308,172 @@ fun EditorScreen(
                         Text("Selecciona una imagen", color = Color.Gray)
                     }
                 }
-
                 if (isProcessing) {
                     Box(
-                        Modifier
-                            .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.35f)),
+                        Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.35f)),
                         contentAlignment = Alignment.Center
-                    ) {
-                        CircularProgressIndicator(color = Color.White)
-                    }
+                    ) { CircularProgressIndicator(color = Color.White) }
                 }
             }
 
-            Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-
-                Spacer(Modifier.height(12.dp))
-
-                // --- Botones de acción ---
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+            // ── Botón expandir/colapsar menú ──────────────────────────────
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface),
+                contentAlignment = Alignment.Center
+            ) {
+                IconButton(
+                    onClick = { menuExpanded = !menuExpanded },
+                    modifier = Modifier
+                        .padding(vertical = 2.dp)
+                        .size(32.dp)
+                        .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
+                        .semantics { contentDescription = if (menuExpanded) "Expandir menú" else "Reducir menú" }
                 ) {
-                    Box(modifier = Modifier.weight(1f)) {
-                        Button(
-                            onClick = { imagePicker.launch("image/*") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .alpha(if (isEditMode) 0.38f else 1f)
-                                .semantics { contentDescription = "Elegir imagen de galería" },
-                            enabled = !isEditMode
-                        ) { Text("Elegir imagen") }
-                    }
-
-                    if (original != null && stencil != null) {
-                        Button(
-                            onClick = { showCompare = !showCompare },
-                            modifier = Modifier
-                                .weight(1f)
-                                .semantics { contentDescription = if (showCompare) "Ver solo stencil" else "Comparar original con stencil" },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (showCompare)
-                                    MaterialTheme.colorScheme.primary
-                                else
-                                    MaterialTheme.colorScheme.secondaryContainer,
-                                contentColor = if (showCompare)
-                                    MaterialTheme.colorScheme.onPrimary
-                                else
-                                    MaterialTheme.colorScheme.onSecondaryContainer
-                            )
-                        ) { Text(if (showCompare) "Stencil" else "Comparar") }
-                    }
-                }
-
-                if (isEditMode) {
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Editando stencil guardado — la imagen original está fija",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    Icon(
+                        imageVector = if (menuExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
                     )
                 }
+            }
 
-                // --- Slider Before/After ---
-                AnimatedVisibility(visible = showCompare && original != null && stencil != null) {
-                    Column {
-                        Spacer(Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("Stencil", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                            Text("Original", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Slider(
-                            value = compareSlider,
-                            onValueChange = { compareSlider = it },
-                            valueRange = 0f..1f,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .semantics { contentDescription = "Slider de comparación antes y después" },
-                            colors = SliderDefaults.colors(
-                                thumbColor = MaterialTheme.colorScheme.primary,
-                                activeTrackColor = MaterialTheme.colorScheme.primary
-                            )
-                        )
-                    }
-                }
+            // ── Panel de configuración SCROLLEABLE (siempre presente) ────
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(panelWeight)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp)
+            ) {
+                    Spacer(Modifier.height(8.dp))
 
-                Spacer(Modifier.height(16.dp))
+                    // Botón elegir imagen
+                    Button(
+                        onClick = { imagePicker.launch("image/*") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .alpha(if (isEditMode) 0.38f else 1f)
+                            .semantics { contentDescription = "Elegir imagen de galería" },
+                        enabled = !isEditMode
+                    ) { Text("Elegir imagen") }
 
-                // --- Presets ---
-                Text(
-                    "Estilos rápidos",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Spacer(Modifier.height(8.dp))
-                LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    contentPadding = PaddingValues(vertical = 4.dp)
-                ) {
-                    items(StencilPreset.entries) { preset ->
-                        ElevatedFilterChip(
-                            selected = params == preset.params,
-                            onClick = { viewModel.applyPreset(preset) },
-                            label = { Text(preset.label) },
-                            modifier = Modifier.semantics { contentDescription = "Aplicar estilo ${preset.label}" },
-                            colors = FilterChipDefaults.elevatedFilterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                        )
-                    }
-                }
-
-                Spacer(Modifier.height(20.dp))
-
-                // --- Parámetros ---
-                Text(
-                    "Ajuste fino",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
-
-                Spacer(Modifier.height(8.dp))
-
-                ParamSlider(
-                    label = "Umbral de bordes",
-                    value = params.edgeThreshold,
-                    description = "Menor = más bordes detectados",
-                    semanticLabel = "Ajustar umbral de bordes"
-                ) { viewModel.updateParams(params.copy(edgeThreshold = it)) }
-
-                ParamSlider(
-                    label = "Grosor de línea",
-                    value = params.lineThickness,
-                    description = "Engrosamiento de trazos",
-                    semanticLabel = "Ajustar grosor de línea"
-                ) { viewModel.updateParams(params.copy(lineThickness = it)) }
-
-                ParamSlider(
-                    label = "Intensidad de sombra",
-                    value = params.shadowIntensity,
-                    description = "Simulación de degradado/sombreado",
-                    semanticLabel = "Ajustar intensidad de sombra"
-                ) { viewModel.updateParams(params.copy(shadowIntensity = it)) }
-
-                ParamSlider(
-                    label = "Contraste",
-                    value = params.contrast,
-                    description = "Realce de detalles antes del proceso",
-                    semanticLabel = "Ajustar contraste"
-                ) { viewModel.updateParams(params.copy(contrast = it)) }
-
-                ParamSlider(
-                    label = "Reducción de ruido",
-                    value = params.blurRadius,
-                    description = "Suaviza la imagen antes de detectar bordes",
-                    semanticLabel = "Ajustar reducción de ruido"
-                ) { viewModel.updateParams(params.copy(blurRadius = it)) }
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp)
-                        .semantics { contentDescription = "Invertir colores del stencil" },
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Invertir colores", style = MaterialTheme.typography.bodyMedium)
+                    if (isEditMode) {
+                        Spacer(Modifier.height(4.dp))
                         Text(
-                            "Líneas blancas sobre fondo negro",
+                            "Editando stencil guardado — la imagen original está fija",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    Spacer(Modifier.width(8.dp))
-                    Switch(
-                        checked = params.invertColors,
-                        onCheckedChange = { viewModel.updateParams(params.copy(invertColors = it)) }
-                    )
-                }
 
-                Spacer(Modifier.height(20.dp))
+                    Spacer(Modifier.height(16.dp))
 
-                // --- Guardar ---
-                AnimatedVisibility(visible = stencil != null) {
-                    Column {
-                        Text(
-                            "Guardar",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value = stencilName,
-                            onValueChange = { stencilName = it },
-                            label = { Text("Nombre del stencil") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .semantics { contentDescription = "Nombre del stencil" },
-                            singleLine = true
-                        )
-                        Spacer(Modifier.height(12.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = { viewModel.saveStencil(stencilName) },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .semantics { contentDescription = if (isEditMode) "Actualizar stencil guardado" else "Guardar stencil" },
-                                enabled = !isProcessing
-                            ) {
-                                Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text(if (isEditMode) "Actualizar" else "Guardar")
-                            }
-                            Button(
-                                onClick = {
-                                    scope.launch { exportToGallery(ctx, stencil!!) }
-                                },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .semantics { contentDescription = "Exportar stencil a la galería" },
-                                enabled = !isProcessing,
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                    // Presets
+                    Text("Estilos rápidos", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.height(8.dp))
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        contentPadding = PaddingValues(vertical = 4.dp)
+                    ) {
+                        items(StencilPreset.entries) { preset ->
+                            ElevatedFilterChip(
+                                selected = params == preset.params,
+                                onClick = { viewModel.applyPreset(preset) },
+                                label = { Text(preset.label) },
+                                modifier = Modifier.semantics { contentDescription = "Aplicar estilo ${preset.label}" },
+                                colors = FilterChipDefaults.elevatedFilterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
-                            ) {
-                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("Galería")
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(20.dp))
+
+                    // Ajuste fino
+                    Text("Ajuste fino", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.height(8.dp))
+
+                    ParamSlider("Umbral de bordes", params.edgeThreshold, "Menor = más bordes detectados", "Ajustar umbral de bordes") {
+                        viewModel.updateParams(params.copy(edgeThreshold = it))
+                    }
+                    ParamSlider("Grosor de línea", params.lineThickness, "Engrosamiento de trazos", "Ajustar grosor de línea") {
+                        viewModel.updateParams(params.copy(lineThickness = it))
+                    }
+                    ParamSlider("Intensidad de sombra", params.shadowIntensity, "Simulación de degradado/sombreado", "Ajustar intensidad de sombra") {
+                        viewModel.updateParams(params.copy(shadowIntensity = it))
+                    }
+                    ParamSlider("Contraste", params.contrast, "Realce de detalles antes del proceso", "Ajustar contraste") {
+                        viewModel.updateParams(params.copy(contrast = it))
+                    }
+                    ParamSlider("Reducción de ruido", params.blurRadius, "Suaviza la imagen antes de detectar bordes", "Ajustar reducción de ruido") {
+                        viewModel.updateParams(params.copy(blurRadius = it))
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp)
+                            .semantics { contentDescription = "Invertir colores del stencil" },
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Invertir colores", style = MaterialTheme.typography.bodyMedium)
+                            Text("Líneas blancas sobre fondo negro", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Switch(checked = params.invertColors, onCheckedChange = { viewModel.updateParams(params.copy(invertColors = it)) })
+                    }
+
+                    Spacer(Modifier.height(20.dp))
+
+                    // Guardar
+                    AnimatedVisibility(visible = stencil != null) {
+                        Column {
+                            Text("Guardar", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = stencilName,
+                                onValueChange = { stencilName = it },
+                                label = { Text("Nombre del stencil") },
+                                modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Nombre del stencil" },
+                                singleLine = true
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    onClick = { viewModel.saveStencil(stencilName) },
+                                    modifier = Modifier.weight(1f).semantics { contentDescription = if (isEditMode) "Actualizar stencil guardado" else "Guardar stencil" },
+                                    enabled = !isProcessing
+                                ) {
+                                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(if (isEditMode) "Actualizar" else "Guardar")
+                                }
+                                Button(
+                                    onClick = { scope.launch { exportToGallery(ctx, stencil!!) } },
+                                    modifier = Modifier.weight(1f).semantics { contentDescription = "Exportar stencil a la galería" },
+                                    enabled = !isProcessing,
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                                    )
+                                ) {
+                                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Galería")
+                                }
                             }
                         }
                     }
-                }
 
                 Spacer(Modifier.height(32.dp))
-            }
-        }
-    }
-}
-
-@Composable
-private fun BeforeAfterView(
-    original: Bitmap,
-    stencil: Bitmap,
-    splitRatio: Float,
-    scale: Float,
-    offsetX: Float,
-    offsetY: Float
-) {
-    Box(modifier = Modifier.fillMaxSize()) {
-        // Base: original image
-        Image(
-            bitmap = original.asImageBitmap(),
-            contentDescription = "Imagen original",
-            contentScale = ContentScale.Fit,
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer(scaleX = scale, scaleY = scale, translationX = offsetX, translationY = offsetY)
-        )
-        // Overlay: stencil clipped from left by splitRatio
-        val animatedRatio by animateFloatAsState(targetValue = splitRatio, label = "split")
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer(
-                    scaleX = scale,
-                    scaleY = scale,
-                    translationX = offsetX,
-                    translationY = offsetY
-                )
-        ) {
-            Image(
-                bitmap = stencil.asImageBitmap(),
-                contentDescription = "Stencil procesado",
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize()
-            )
-        }
-        // Divider line
-        if (splitRatio > 0f && splitRatio < 1f) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(start = (splitRatio * 100).dp.let { it })
-            ) {
-                // vertical divider line visual hint
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.CenterStart)
-                        .width(2.dp)
-                        .height(60.dp)
-                        .background(Color.White.copy(alpha = 0.8f), RoundedCornerShape(1.dp))
-                )
-            }
+            }           // fin Column panel scrolleable
         }
     }
 }
@@ -687,19 +504,13 @@ private fun ParamSlider(
             value = value,
             onValueChange = onValueChange,
             valueRange = 0f..1f,
-            modifier = Modifier
-                .fillMaxWidth()
-                .semantics { contentDescription = semanticLabel },
+            modifier = Modifier.fillMaxWidth().semantics { contentDescription = semanticLabel },
             colors = SliderDefaults.colors(
                 thumbColor = MaterialTheme.colorScheme.primary,
                 activeTrackColor = MaterialTheme.colorScheme.primary
             )
         )
-        Text(
-            description,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Text(description, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -718,8 +529,7 @@ private suspend fun exportToGallery(ctx: Context, bitmap: Bitmap) {
                 stream = uri?.let { ctx.contentResolver.openOutputStream(it) }
             } else {
                 val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
-                val file = java.io.File(dir, filename)
-                stream = java.io.FileOutputStream(file)
+                stream = java.io.FileOutputStream(java.io.File(dir, filename))
             }
             stream?.use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
             withContext(Dispatchers.Main) {

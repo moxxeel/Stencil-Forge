@@ -26,11 +26,11 @@ enum class StencilPreset(val label: String, val params: StencilParams) {
     FINE_ART(
         label = "Fine Art",
         params = StencilParams(
-            edgeThreshold = 0.35f,
-            shadowIntensity = 0.7f,
-            lineThickness = 0.2f,
-            contrast = 0.55f,
-            blurRadius = 0.4f,
+            edgeThreshold = 0.95f,
+            shadowIntensity = 0.91f,
+            lineThickness = 0.05f,
+            contrast = 0.43f,
+            blurRadius = 0.1f,
             invertColors = false
         )
     ),
