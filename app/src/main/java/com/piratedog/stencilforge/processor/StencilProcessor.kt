@@ -10,13 +10,13 @@ import kotlin.math.sqrt
 /**
  * Pipeline:
  *  1. Grayscale (perceptual weights)
- *  2. CLAHE-style histogram equalization (improves local contrast)
- *  3. Gaussian blur (noise reduction, separable O(n*r))
- *  4. Sobel gradients
- *  5. Non-maximum suppression → 1-px-wide edges
- *  6. Hysteresis threshold (8-connected BFS)
- *  7. Erosion (remove isolated dots)
- *  8. Dilation (line thickness)
+ *  2. CLAHE equalization (local contrast)
+ *  3. Optional unsharp mask (sharpness)
+ *  4. Gaussian blur (noise reduction)
+ *  5. Sobel gradients → NMS → Hysteresis (Canny edges)
+ *  6. Adaptive shadow mask — dark regions become filled black (shadowIntensity)
+ *  7. Combine: edges OR shadows
+ *  8. Erosion → Dilation (lineThickness)
  *  9. Optional inversion
  */
 object StencilProcessor {
@@ -29,10 +29,19 @@ object StencilProcessor {
         val equalized  = claheEqualize(gray, w, h, params.contrast)
         val sharpened  = if (params.sharpness > 0f) unsharpMask(equalized, w, h, params.sharpness) else equalized
         val blurred    = gaussianBlur(sharpened, w, h, blurRadius(params.blurRadius))
+
+        // Canny edge detection
         val (mag, ang) = sobelEdges(blurred, w, h)
         val suppressed = nonMaxSuppression(mag, ang, w, h)
         val edges      = hysteresisThreshold(suppressed, w, h, params.edgeThreshold, params.edgeConnectivity)
-        val clean      = erode(edges, w, h)
+
+        // Shadow/fill mask from dark regions
+        val shadows    = adaptiveShadowMask(blurred, w, h, params.shadowIntensity)
+
+        // Combine: a pixel is black if it's an edge OR a shadow
+        val combined   = IntArray(w * h) { i -> if (edges[i] == 0 || shadows[i] == 0) 0 else 255 }
+
+        val clean      = erode(combined, w, h)
         val thick      = dilate(clean, w, h, dilationSize(params.lineThickness))
         val result     = if (params.invertColors) invert(thick) else thick
         return toBitmap(result, w, h)
@@ -123,6 +132,50 @@ object StencilProcessor {
         val blurred = gaussianBlur(gray, w, h, 2)
         return IntArray(gray.size) { i ->
             (gray[i] + strength * (gray[i] - blurred[i])).roundToInt().coerceIn(0, 255)
+        }
+    }
+
+    // --- Shadow mask: adaptive local threshold → preserves dark filled regions ---
+    // For each pixel, compare against the local mean of a surrounding window.
+    // Pixels darker than (localMean * factor) become black (shadow fill).
+    // strength=0 → no shadows; strength=1 → aggressive fill (most mid-tones become black).
+
+    private fun adaptiveShadowMask(gray: IntArray, w: Int, h: Int, strength: Float): IntArray {
+        if (strength <= 0f) return IntArray(gray.size) { 255 } // all white = no shadow
+        // Window radius for local mean: larger = more regional comparison
+        val radius = 24
+        val localMean = boxBlur(gray, w, h, radius)
+        // factor: strength=0 → 1.0 (never triggers), strength=1 → 0.55 (dark midtones fill)
+        val factor = 1.0f - strength * 0.45f
+        return IntArray(gray.size) { i ->
+            if (gray[i] < localMean[i] * factor) 0 else 255
+        }
+    }
+
+    // Fast box blur using integral image for O(1) per pixel local mean
+    private fun boxBlur(gray: IntArray, w: Int, h: Int, radius: Int): IntArray {
+        val integral = LongArray((w + 1) * (h + 1))
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                integral[(y + 1) * (w + 1) + (x + 1)] =
+                    gray[y * w + x] +
+                    integral[y * (w + 1) + (x + 1)] +
+                    integral[(y + 1) * (w + 1) + x] -
+                    integral[y * (w + 1) + x]
+            }
+        }
+        return IntArray(w * h) { idx ->
+            val x = idx % w; val y = idx / w
+            val x0 = (x - radius).coerceAtLeast(0)
+            val y0 = (y - radius).coerceAtLeast(0)
+            val x1 = (x + radius).coerceAtMost(w - 1)
+            val y1 = (y + radius).coerceAtMost(h - 1)
+            val area = (x1 - x0 + 1) * (y1 - y0 + 1)
+            val sum = integral[(y1 + 1) * (w + 1) + (x1 + 1)] -
+                      integral[y0 * (w + 1) + (x1 + 1)] -
+                      integral[(y1 + 1) * (w + 1) + x0] +
+                      integral[y0 * (w + 1) + x0]
+            (sum / area).toInt().coerceIn(0, 255)
         }
     }
 

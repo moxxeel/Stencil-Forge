@@ -480,7 +480,7 @@ fun EditorScreen(
                         ParamSlider("Grosor de línea", params.lineThickness, "Engrosamiento de trazos", "Ajustar grosor de línea") {
                             viewModel.updateParams(params.copy(lineThickness = it))
                         }
-                        ParamSlider("Intensidad de sombra", params.shadowIntensity, "Simulación de degradado/sombreado", "Ajustar intensidad de sombra") {
+                        ParamSlider("Relleno de sombras", params.shadowIntensity, "Zonas oscuras se convierten en negro sólido", "Ajustar relleno de sombras") {
                             viewModel.updateParams(params.copy(shadowIntensity = it))
                         }
                         ParamSlider("Contraste", params.contrast, "Realce de detalles antes del proceso", "Ajustar contraste") {
